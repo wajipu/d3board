@@ -1,6 +1,8 @@
 # build output
 dist/
 build/
+out/
+stage/
 
 # macOS
 .DS_Store

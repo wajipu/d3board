@@ -1,0 +1,79 @@
+name: build
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS universal
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "building $version"
+
+      - name: Build arm64 + x86_64
+        env:
+          ARCHS: "arm64 x86_64"
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./build.sh
+
+      - name: Check both slices are present
+        run: |
+          archs=$(lipo -archs dist/D3Board.app/Contents/MacOS/D3Board)
+          echo "archs: $archs"
+          case "$archs" in *arm64*) ;; *) echo "missing arm64"; exit 1 ;; esac
+          case "$archs" in *x86_64*) ;; *) echo "missing x86_64"; exit 1 ;; esac
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            dist/D3Board.app/Contents/Info.plist
+
+      - name: Package zip and dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p out
+          name="D3Board-$VERSION-macos-universal"
+          ditto -c -k --sequesterRsrc --keepParent dist/D3Board.app "out/$name.zip"
+
+          rm -rf stage && mkdir stage
+          cp -R dist/D3Board.app stage/
+          ln -s /Applications stage/Applications
+          hdiutil create -quiet -volname D3Board -srcfolder stage \
+            -ov -format UDZO "out/$name.dmg"
+          shasum -a 256 out/* | tee out/SHA256SUMS.txt
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: D3Board-${{ steps.version.outputs.version }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -70,9 +70,29 @@ osascript -e 'tell application "System Events" to make login item at end with pr
 
 ```sh
 brew install scrcpy
-./build.sh              # 产出 dist/D3Board.app
-./tools/makeicon.sh     # 重新生成图标（可选）
+./build.sh                                    # 只编当前架构（快）
+ARCHS="arm64 x86_64" ./build.sh               # universal
+VERSION=1.2.0 BUILD_NUMBER=9 ./build.sh       # 打上版本号
+./tools/makeicon.sh                           # 重新生成图标（可选）
 ```
+
+## 自动打包
+
+`.github/workflows/build.yml`：每次 push 都出 universal（arm64 + x86_64）产物，
+打 `v*` tag 时附到 GitHub Release。产物两个格式：
+
+- `D3Board-<version>-macos-universal.zip`
+- `D3Board-<version>-macos-universal.dmg`（拖进 Applications 即可）
+- `SHA256SUMS.txt`
+
+发版：
+
+```sh
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+CI 里会校验两个 slice 都在、版本号确实写进了 Info.plist，然后跑
+`hdiutil verify`。
 
 自测（无 GUI，直接跑 Engine：发现 → 记录 → 镜像 → 校验物理屏状态 → 停止）：
 
