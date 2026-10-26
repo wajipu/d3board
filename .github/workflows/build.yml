@@ -61,7 +61,11 @@ jobs:
           ln -s /Applications stage/Applications
           hdiutil create -quiet -volname D3Board -srcfolder stage \
             -ov -format UDZO "out/$name.dmg"
-          shasum -a 256 out/* | tee out/SHA256SUMS.txt
+          # Bare filenames: whoever downloads the files into one folder must be
+          # able to run `shasum -a 256 -c SHA256SUMS.txt` there.
+          ( cd out && shasum -a 256 "D3Board-$VERSION-macos-universal.dmg" \
+              "D3Board-$VERSION-macos-universal.zip" > SHA256SUMS.txt )
+          cat out/SHA256SUMS.txt
           ls -lh out
 
       - uses: actions/upload-artifact@v4
