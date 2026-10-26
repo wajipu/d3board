@@ -217,6 +217,32 @@ final class Engine {
         set { UserDefaults.standard.set(newValue, forKey: "nativeResolution") }
     }
 
+    /// Per-device mirror overrides. TVs with a software encoder are the reason
+    /// this exists: their hardware ceiling is low, so the global "1024px/2M for
+    /// smoothness" default looks like mud, while the boards with a Rockchip
+    /// encoder are fine with it. Keyed by serial, same as everything else.
+    private struct MirrorTuning: Codable {
+        var maxSize: Int?
+        var bitRate: String?
+    }
+
+    private static let defaultTuning: [String: MirrorTuning] = [
+        // MiTV-ASTP0 (MTK mulan): OMX.google soft encoder only — raise the
+        // clarity instead of fighting for fps it cannot deliver anyway.
+        "MiTV-ASTP0": MirrorTuning(maxSize: 1920, bitRate: "8M"),
+    ]
+
+    private func tuning(for serial: String) -> MirrorTuning {
+        // Custom override wins, then the built-in table by model, then the
+        // global default (nil = whatever startMirror normally does).
+        if let data = UserDefaults.standard.data(forKey: "mirrorTuning.\(serial)"),
+           let custom = try? JSONDecoder().decode(MirrorTuning.self, from: data) {
+            return custom
+        }
+        let model = registry.items[serial]?.model ?? ""
+        return Engine.defaultTuning[model] ?? MirrorTuning(maxSize: nil, bitRate: nil)
+    }
+
     // MARK: lifecycle
 
     func bootstrap() {
@@ -607,6 +633,7 @@ final class Engine {
         guard mirrorProcs[serial] == nil else { return }
 
         let name = displayName(serial: serial, fallback: device.model)
+        let tuning = tuning(for: serial)
         var args = [
             "-s", device.address,
             "--turn-screen-off",
@@ -614,10 +641,15 @@ final class Engine {
             "--no-audio",
             "--no-mouse-hover",
             "--max-fps=30",
-            "--video-bit-rate=2M",
+            "--video-bit-rate=\(tuning.bitRate ?? "2M")",
             "--window-title=\(name) — \(device.address)",
         ]
-        if !nativeResolution { args.append("--max-size=1024") }
+        if let maxSize = tuning.maxSize {
+            // This device has a reason to deviate from the global cap.
+            args.append("--max-size=\(maxSize)")
+        } else if !nativeResolution {
+            args.append("--max-size=1024")
+        }
 
         let isRockchip = device.device.hasPrefix("rk356") || device.device.hasPrefix("rk358")
         if isRockchip {

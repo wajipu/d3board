@@ -401,6 +401,13 @@ def save_mirrors(data):
         log("mirrors not saved: %s" % error)
 
 
+# Mirror overrides for devices whose encoder can do better (or worse) than the
+# global default; keep in sync with Engine.defaultTuning in Sources/Engine.swift.
+DEVICE_TUNING = {
+    "MiTV-ASTP0": {"max_size": 1920, "bit_rate": "8M"},  # soft encoder only (MTK mulan)
+}
+
+
 def mirror_pids(address):
     """scrcpy processes for this address (alive ones only)."""
     pids = []
@@ -422,8 +429,13 @@ def start_mirror(device, screen_off=True, native_resolution=False,
             "--stay-awake", "--no-audio", "--no-mouse-hover",
             "--max-fps=%s" % max_fps, "--video-bit-rate=%s" % bitrate,
             "--window-title=%s - %s" % (device.get("name", device["model"]), address)]
-    if not native_resolution:
-        args.append("--max-size=1024")
+    tuning = DEVICE_TUNING.get(device.get("model", ""), {})
+    max_size = tuning.get("max_size", 1024 if not native_resolution else None)
+    bit_rate = tuning.get("bit_rate", bitrate)
+    if max_size:
+        args.append("--max-size=%s" % max_size)
+    args = [a if not a.startswith("--video-bit-rate=") else "--video-bit-rate=%s" % bit_rate
+            for a in args]
     if screen_off:
         args.append("--turn-screen-off")
     if device.get("device", "").startswith(("rk356", "rk358")):
