@@ -48,6 +48,15 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
             dist/D3Board.app/Contents/Info.plist
 
+      - name: Compile the update test
+        # The test itself downloads a real release, so it stays a local tool; but
+        # compile it here so it cannot rot silently.
+        run: |
+          mkdir -p /tmp/d3ut
+          cp tools/test_update.swift /tmp/d3ut/main.swift
+          swiftc -O -swift-version 5 Sources/Engine.swift Sources/Updater.swift \
+            /tmp/d3ut/main.swift -o /tmp/d3ut/test
+
       - name: Package zip and dmg
         env:
           VERSION: ${{ steps.version.outputs.version }}

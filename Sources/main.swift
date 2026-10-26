@@ -8,7 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     private let statusLabel = NSTextField(labelWithString: "准备中…")
     private let nativeCheck = NSButton(checkboxWithTitle: "原生分辨率", target: nil, action: nil)
     private let engine = Engine.shared
+    private let updater = Updater.shared
     private var rows: [DeviceRow] = []
+    private var progressSheet: NSWindow?
+    private var presentingUpdate = false
+    private let progressLabel = NSTextField(labelWithString: "")
+    private let progressSpinner = NSProgressIndicator()
 
     // MARK: - App lifecycle
 
@@ -16,9 +21,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         buildMenu()
         buildWindow()
         wireEngine()
+        wireUpdater()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         engine.bootstrap()
+
+        // A quiet check shortly after launch, then every few hours. Manual
+        // checks from the menu always report, even when nothing is new.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.updater.check(manual: false)
+        }
+        let timer = Timer(timeInterval: 4 * 3600, repeats: true) { [weak self] _ in
+            self?.updater.check(manual: false)
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -35,6 +51,145 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         engine.onScanState = { [weak self] scanning in self?.setScanning(scanning) }
     }
 
+    private func wireUpdater() {
+        updater.onAvailable = { [weak self] info in self?.presentUpdate(info) }
+        updater.onUpToDate = { [weak self] version in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "已是最新版本"
+            alert.informativeText = "当前 \(version)，GitHub 上没有更新的 release。"
+            alert.addButton(withTitle: "好")
+            alert.beginSheetModal(for: self.window, completionHandler: nil)
+        }
+        updater.onFailure = { [weak self] message in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "检查更新失败"
+            alert.informativeText = message
+            alert.addButton(withTitle: "好")
+            alert.beginSheetModal(for: self.window, completionHandler: nil)
+        }
+    }
+
+    private func presentUpdate(_ info: ReleaseInfo) {
+        // The 4h timer and a manual check can land together; one sheet at a time.
+        guard !presentingUpdate else { return }
+        presentingUpdate = true
+        appendLog("发现新版本 \(info.version)（当前 \(Updater.currentVersion)）")
+        let alert = NSAlert()
+        alert.messageText = "有新版本 \(info.version)"
+        var detail = "当前版本 \(Updater.currentVersion)。"
+        let notes = info.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty {
+            detail += "\n\n" + String(notes.prefix(900))
+        }
+        alert.informativeText = detail
+        alert.addButton(withTitle: "下载并安装")
+        alert.addButton(withTitle: "稍后")
+        alert.addButton(withTitle: "跳过此版本")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.presentingUpdate = false
+            switch response {
+            case .alertFirstButtonReturn:
+                self.installUpdate(info)
+            case .alertThirdButtonReturn:
+                self.updater.skip(version: info.version)
+                self.appendLog("已跳过 \(info.version)")
+            default:
+                self.appendLog("稍后再说，保留 \(info.version) 提示")
+            }
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        updater.check(manual: true)
+    }
+
+    private func installUpdate(_ info: ReleaseInfo) {
+        guard info.zipURL != nil else {
+            let alert = NSAlert()
+            alert.messageText = "无法自动安装"
+            alert.informativeText = "这个 release 没有 zip 资产，请到发布页手动下载。"
+            alert.addButton(withTitle: "打开发布页")
+            alert.addButton(withTitle: "取消")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(info.pageURL)
+            }
+            return
+        }
+
+        showProgress("正在准备…")
+        updater.install(info, progress: { [weak self] text in
+            self?.showProgress(text)
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.progressLabel.stringValue = "更新完成，正在重启…"
+                self.appendLog("已安装 \(info.version)，重启")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    NSApp.terminate(nil)
+                }
+            case .failure(let error):
+                self.hideProgress()
+                self.appendLog("更新失败：\(error.localizedDescription)")
+                let alert = NSAlert()
+                alert.messageText = "更新失败"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "打开发布页")
+                alert.addButton(withTitle: "好")
+                alert.beginSheetModal(for: self.window) { response in
+                    if response == .alertFirstButtonReturn {
+                        NSWorkspace.shared.open(info.pageURL)
+                    }
+                }
+            }
+        })
+    }
+
+    private func showProgress(_ text: String) {
+        if progressSheet == nil {
+            let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 96),
+                                 styleMask: [.titled], backing: .buffered, defer: false)
+            sheet.title = "更新 D3Board"
+
+            progressLabel.stringValue = text
+            progressLabel.font = NSFont.systemFont(ofSize: 12)
+            progressLabel.lineBreakMode = .byTruncatingTail
+            progressLabel.translatesAutoresizingMaskIntoConstraints = false
+
+            let spinner = progressSpinner
+            spinner.style = .spinning
+            spinner.isIndeterminate = true
+            spinner.controlSize = .small
+            spinner.startAnimation(nil)
+            spinner.translatesAutoresizingMaskIntoConstraints = false
+
+            let content = NSView()
+            content.addSubview(progressLabel)
+            content.addSubview(spinner)
+            NSLayoutConstraint.activate([
+                spinner.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                spinner.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+                progressLabel.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 10),
+                progressLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                progressLabel.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            ])
+            sheet.contentView = content
+            window.beginSheet(sheet, completionHandler: nil)
+            progressSheet = sheet
+        }
+        progressLabel.stringValue = text
+    }
+
+    private func hideProgress() {
+        guard let sheet = progressSheet else { return }
+        progressSpinner.stopAnimation(nil)
+        window.endSheet(sheet)
+        progressSheet = nil
+    }
+
     // MARK: - UI
 
     private func buildMenu() {
@@ -44,6 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "关于 D3Board", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let checkItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "u")
+        checkItem.target = self
+        appMenu.addItem(checkItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 D3Board", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())

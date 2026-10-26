@@ -31,6 +31,32 @@
 
 快捷键：`⌘R` 扫描，`⌘⇧R` 深度扫描，`⌘M` 镜像，`⌘.` 停止。
 
+## 更新
+
+app 自己会检查 GitHub 上新版本，不用手动下载：
+
+- 启动 3 秒后查一次 `releases/latest`，之后每 4 小时查一次（这个间隔只是避免反复联网，
+  手动 `⌘U` 或菜单 **D3Board → 检查更新…** 随时随地查）。
+- 有新版本弹窗写清版本号和更新说明，三个选择：**下载并安装** / **稍后** / **跳过此版本**。
+  跳过会记住，之后不再为那个版本打扰你。
+- 下载的是 release 里的 zip。装之前会核对：解出来的 bundle 的
+  `CFBundleShortVersionString` 必须和 release tag 一致，不一致就中止，不会拿错包覆盖自己。
+- 替换由一段分离的 shell 脚本完成：它按 **pid** 等当前进程真正退出，再把
+  `D3Board.app` 挪到 `.old`、拷入新包、重启，成功后才删 `.old`。拷贝失败会把 `.old` 挪回来。
+  进程 60 秒还没退就放弃替换——宁可不更新，也不在运行中的进程底下换文件。
+- 更新没有签名校验（release 是 ad-hoc 签名，也没做公证），第一次从浏览器下载的包仍然需要
+  右键 → 打开。走 app 内更新的话由脚本去掉 quarantine 属性，不会二次拦。
+
+天花板：只有已经装了带 updater 的版本（1.2.0 起）才能自更新。更早的 1.0/1.1 只能手动装一次。
+
+更新链路可以单独跑（会真的下载当前 release 并替换一个临时副本，不碰 `/Applications`）：
+
+```
+mkdir -p /tmp/d3ut && cp tools/test_update.swift /tmp/d3ut/main.swift
+swiftc -O -swift-version 5 Sources/Engine.swift Sources/Updater.swift /tmp/d3ut/main.swift -o /tmp/d3ut/test
+ARCHS=arm64 VERSION=0.9.0 ./build.sh && /tmp/d3ut/test
+```
+
 ## 它怎么找设备
 
 扫描分两步，目标是"快"和"IP 变了也能找到"：

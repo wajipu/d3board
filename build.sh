@@ -21,7 +21,7 @@ for arch in $ARCHS; do
     *) echo "build.sh: unsupported arch '$arch'" >&2; exit 1 ;;
   esac
   swiftc -O -swift-version 5 -target "${arch}-apple-macos12.0" \
-    Sources/Engine.swift Sources/main.swift -o "$WORK/D3Board-$arch"
+    Sources/Engine.swift Sources/Updater.swift Sources/main.swift -o "$WORK/D3Board-$arch"
   SLICES="$SLICES $WORK/D3Board-$arch"
 done
 
