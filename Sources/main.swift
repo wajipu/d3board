@@ -252,6 +252,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         window.minSize = NSSize(width: 860, height: 520)
         window.center()
         window.setFrameAutosaveName("D3BoardMain")
+        // The autosaved frame is restored from the last run, and it can point at a
+        // display that is no longer attached (or at coordinates from a bigger
+        // screen), which makes the window open effectively invisible. If no screen
+        // would show a real piece of it, start centered instead.
+        if !NSScreen.screens.contains(where: { $0.visibleFrame.insetBy(dx: 60, dy: 60).intersects(window.frame) }) {
+            window.setFrame(NSRect(x: 0, y: 0, width: 1020, height: 660), display: false)
+            window.center()
+        }
 
         let content = NSView()
         window.contentView = content
