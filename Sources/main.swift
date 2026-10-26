@@ -84,14 +84,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             detail += "\n\n" + String(notes.prefix(900))
         }
         alert.informativeText = detail
-        alert.addButton(withTitle: "下载并安装")
+        // "稍后" is the default button on purpose: an update restarts the app and
+        // interrupts whatever the boards are doing, so a stray Return or a click
+        // that was meant for the window behind should not start it. macOS does the
+        // same in Software Update.
         alert.addButton(withTitle: "稍后")
+        alert.addButton(withTitle: "下载并安装")
         alert.addButton(withTitle: "跳过此版本")
+        Updater.trace("alert shown for \(info.version) parentVisible=\(window.isVisible) key=\(window.isKeyWindow) active=\(NSApp.isActive)")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
+            Updater.trace("alert response=\(response.rawValue)")
             self.presentingUpdate = false
             switch response {
-            case .alertFirstButtonReturn:
+            case .alertSecondButtonReturn:
                 self.installUpdate(info)
             case .alertThirdButtonReturn:
                 self.updater.skip(version: info.version)
@@ -128,8 +134,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case .success:
                 self.progressLabel.stringValue = "更新完成，正在重启…"
                 self.appendLog("已安装 \(info.version)，重启")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    // NSApplication.terminate is a no-op while a sheet is up: it
+                    // returns happily and the app keeps running, which leaves the
+                    // user staring at "正在重启" and the swap helper waiting for a
+                    // process that never exits. End the sheet first.
+                    self.hideProgress()
                     NSApp.terminate(nil)
+                    Updater.trace("terminate returned, still running")
+                    // Belt and braces: if the quit is deferred anyway, stop the
+                    // mirrors ourselves and exit — the helper can only swap once
+                    // this pid is gone.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        Engine.shared.stopAllMirrors()
+                        exit(0)
+                    }
                 }
             case .failure(let error):
                 self.hideProgress()

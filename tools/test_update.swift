@@ -115,7 +115,7 @@ func versionOnDisk() -> String? {
 }
 let before = versionOnDisk() ?? "?"
 print("scratch  \(before)")
-check(before != version, "scratch bundle is an older version, so the swap is observable")
+check(before != version, "scratch bundle differs from the release, so the swap is observable")
 
 let child = Process()
 child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])

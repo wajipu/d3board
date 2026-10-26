@@ -47,6 +47,22 @@ final class Updater {
     var onUpToDate: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
 
+    /// Update decisions are the one thing that is hard to observe after the app
+    /// restarts itself, so they go to a small file as well as the log pane.
+    static func trace(_ message: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/D3Board-update.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
     static var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
@@ -61,6 +77,7 @@ final class Updater {
             }
         }
         defaults.set(Date(), forKey: "lastUpdateCheck")
+        Updater.trace("check manual=\(manual) local=\(Updater.currentVersion)")
 
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!)
         request.setValue("D3Board/\(Updater.currentVersion)", forHTTPHeaderField: "User-Agent")
@@ -87,6 +104,7 @@ final class Updater {
             }
 
             let remoteVersion = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            Updater.trace("latest=\(remoteVersion)")
             let notes = (json["body"] as? String) ?? ""
             let page = URL(string: (json["html_url"] as? String) ?? "https://github.com/\(self.repo)/releases")
             var zip: URL?
@@ -119,6 +137,7 @@ final class Updater {
                                    pageURL: page ?? URL(string: "https://github.com/\(self.repo)")!,
                                    zipURL: zip)
             self.latest = info
+            Updater.trace("offering \(info.version) zip=\(zip?.lastPathComponent ?? "none")")
             DispatchQueue.main.async { self.onAvailable?(info) }
         }.resume()
     }
@@ -163,6 +182,9 @@ final class Updater {
             .appendingPathComponent("D3Board-update-\(release.version)-\(UUID().uuidString)")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                // Earlier attempts (including ones that never installed) leave
+                // unpacked bundles behind; they are only useful until the swap.
+                Updater.cleanWorkDirs()
                 try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
 
                 DispatchQueue.main.async { progress("正在下载 \(release.version)…") }
@@ -189,12 +211,26 @@ final class Updater {
                     throw UpdateError.mismatch(expected: release.version, found: unpacked)
                 }
 
+                Updater.trace("verified \(release.version), scheduling swap into \(target.path)")
                 DispatchQueue.main.async { progress("正在替换，马上重启…") }
                 try Updater.scheduleSwap(newApp: newApp, target: target, workDirectory: work)
                 DispatchQueue.main.async { completion(.success(())) }
             } catch {
+                Updater.trace("install failed: \(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: work)
                 DispatchQueue.main.async { completion(.failure(error)) }
             }
+        }
+    }
+
+    /// Leftovers from a previous attempt: unpacked bundles and zips add up, and
+    /// nothing else cleans them.
+    private static func cleanWorkDirs() {
+        let fm = FileManager.default
+        let temp = fm.temporaryDirectory
+        guard let items = try? fm.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil) else { return }
+        for item in items where item.lastPathComponent.hasPrefix("D3Board-update-") {
+            try? fm.removeItem(at: item)
         }
     }
 
@@ -255,6 +291,7 @@ final class Updater {
         # whose files were just replaced.
         APP="\(app.path)"
         NEW="\(newApp.path)"
+        WORK="\(workDirectory.path)"
         OWNER=\(ownerPID)
         i=0
         while [ "$i" -lt 300 ]; do
@@ -263,22 +300,26 @@ final class Updater {
           i=$((i + 1))
         done
         if /bin/kill -0 "$OWNER" 2>/dev/null; then
+          /bin/rm -rf "$WORK"
           exit 0
         fi
         /bin/rm -rf "$APP.old"
         if ! /bin/mv "$APP" "$APP.old"; then
           /usr/bin/open "$APP"
+          /bin/rm -rf "$WORK"
           exit 1
         fi
         if ! /usr/bin/ditto "$NEW" "$APP"; then
           /bin/rm -rf "$APP"
           /bin/mv "$APP.old" "$APP"
           /usr/bin/open "$APP"
+          /bin/rm -rf "$WORK"
           exit 1
         fi
         /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null
         /usr/bin/open "$APP"
         /bin/rm -rf "$APP.old"
+        /bin/rm -rf "$WORK"
         """
         do {
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
