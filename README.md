@@ -50,6 +50,67 @@
 
 后台每 30 秒体检一次；发现记录里的设备掉线，会自动做一次全网段查找（限频 60 秒）。
 
+## 给 agent 用（MCP + skill）
+
+`mcp/d3board.py` 是一个零依赖的 MCP server（Python 3.9+ 标准库，stdio），
+和 GUI 共用同一份设备记录，所以 agent 看到的地址和 app 里一致；不需要 app 开着。
+
+同一个文件也是命令行工具：
+
+```sh
+python3 mcp/d3board.py list --deep
+python3 mcp/d3board.py info D3-503
+python3 mcp/d3board.py shell D3-503 'dumpsys power | head -5'
+python3 mcp/d3board.py screenshot D3-503 -o /tmp/board.png
+python3 mcp/d3board.py mirror D3-503      # 物理屏熄灭
+python3 mcp/d3board.py stop D3-503        # 恢复
+```
+
+设备参数可以是昵称、型号、序列号或 `ip:5555`——**不建议写死 IP**，
+`list --deep` 会在地址变了之后自己找回来。
+
+MCP 工具：
+
+| 工具 | 用途 |
+|---|---|
+| `list_devices` | 列设备（`deep=true` 全网段重扫） |
+| `device_status` | 版本、唤醒状态、电量、面板是否已断电、正在镜像的 pid |
+| `adb_shell` | 跑任意 adb shell 命令 |
+| `screenshot` | 设备截图，以 PNG image content 返回 |
+| `mirror` / `stop_mirror` | 开/关 scrcpy（默认关物理屏） |
+| `wake_screen` | 亮屏 |
+| `install_apk` / `transfer_file` | 安装 APK、push/pull 文件 |
+
+接入 opencode（`~/.config/opencode/opencode.json`）：
+
+```json
+{
+  "mcp": {
+    "d3board": {
+      "command": ["python3", "/path/to/d3board/mcp/d3board.py", "mcp"],
+      "enabled": true,
+      "type": "local"
+    }
+  }
+}
+```
+
+Claude Code / Codex 同理，命令行是 `python3 /path/to/mcp/d3board.py mcp`。
+
+skill 在 `skills/d3board/SKILL.md`，agent 会据此知道"先 list、别写死 IP、
+别 `pkill scrcpy`"这些规矩。装到 opencode：
+
+```sh
+ln -s "$PWD/skills/d3board" ~/.skillshub/d3board
+ln -s ~/.skillshub/d3board ~/.config/opencode/skills/d3board
+```
+
+自测（会真的连板子跑一遍握手、截图、shell）：
+
+```sh
+python3 tools/test_mcp.py
+```
+
 ## 数据
 
 - 设备记录：`~/Library/Application Support/D3Board/devices.json`

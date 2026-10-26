@@ -77,3 +77,19 @@ jobs:
           files: out/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  mcp:
+    name: MCP server (protocol)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Syntax check
+        run: python3 -m py_compile mcp/d3board.py tools/test_mcp.py
+
+      - name: Handshake and tool calls
+        run: python3 tools/test_mcp.py
