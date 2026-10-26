@@ -79,14 +79,20 @@ jobs:
           fail_on_unmatched_files: true
 
   mcp:
-    name: MCP server (protocol)
-    runs-on: ubuntu-latest
+    name: MCP server (protocol, py${{ matrix.python }})
+    # ubuntu-latest moved to 26.04, which has no 3.9 build in setup-python;
+    # pin the runner so the "3.9+" claim in the README is actually tested.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: ${{ matrix.python }}
 
       - name: Syntax check
         run: python3 -m py_compile mcp/d3board.py tools/test_mcp.py
