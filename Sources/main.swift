@@ -1,0 +1,419 @@
+import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private var window: NSWindow!
+    private let table = NSTableView()
+    private let logView = NSTextView()
+    private let spinner = NSProgressIndicator()
+    private let statusLabel = NSTextField(labelWithString: "准备中…")
+    private let nativeCheck = NSButton(checkboxWithTitle: "原生分辨率", target: nil, action: nil)
+    private let engine = Engine.shared
+    private var rows: [DeviceRow] = []
+
+    // MARK: - App lifecycle
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildMenu()
+        buildWindow()
+        wireEngine()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        engine.bootstrap()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // scrcpy restores the physical panel when it exits.
+        engine.stopAllMirrors()
+        Thread.sleep(forTimeInterval: 0.6)
+    }
+
+    private func wireEngine() {
+        engine.onChange = { [weak self] in self?.refresh() }
+        engine.onLog = { [weak self] line in self?.appendLog(line) }
+        engine.onScanState = { [weak self] scanning in self?.setScanning(scanning) }
+    }
+
+    // MARK: - UI
+
+    private func buildMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关于 D3Board", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "隐藏 D3Board", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "退出 D3Board", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        let deviceItem = NSMenuItem()
+        main.addItem(deviceItem)
+        let deviceMenu = NSMenu(title: "设备")
+        let scan = NSMenuItem(title: "扫描", action: #selector(rescanAction), keyEquivalent: "r")
+        scan.target = self
+        deviceMenu.addItem(scan)
+        let deep = NSMenuItem(title: "全网段深度扫描", action: #selector(deepScanAction), keyEquivalent: "R")
+        deep.target = self
+        deviceMenu.addItem(deep)
+        deviceMenu.addItem(.separator())
+        let mirror = NSMenuItem(title: "镜像（黑屏）", action: #selector(mirrorAction), keyEquivalent: "m")
+        mirror.target = self
+        deviceMenu.addItem(mirror)
+        let stop = NSMenuItem(title: "停止镜像", action: #selector(stopAction), keyEquivalent: ".")
+        stop.target = self
+        deviceMenu.addItem(stop)
+        deviceItem.submenu = deviceMenu
+
+        NSApp.mainMenu = main
+    }
+
+    private func buildWindow() {
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1020, height: 660),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "D3Board — 局域网设备"
+        window.minSize = NSSize(width: 860, height: 520)
+        window.center()
+        window.setFrameAutosaveName("D3BoardMain")
+
+        let content = NSView()
+        window.contentView = content
+
+        // --- top bar
+        let scanButton = makeButton("扫描", #selector(rescanAction))
+        let deepButton = makeButton("深度扫描", #selector(deepScanAction))
+        nativeCheck.target = self
+        nativeCheck.action = #selector(toggleNative)
+        nativeCheck.state = engine.nativeResolution ? .on : .off
+        nativeCheck.toolTip = "镜像时使用设备原始分辨率（更清晰，也更吃带宽）"
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 16).isActive = true
+
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let topBar = NSStackView(views: [scanButton, deepButton, spinner, statusLabel, nativeCheck])
+        topBar.orientation = .horizontal
+        topBar.spacing = 10
+        topBar.alignment = .centerY
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        topBar.setCustomSpacing(4, after: deepButton)
+        content.addSubview(topBar)
+
+        // --- table
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+        content.addSubview(scroll)
+
+        table.usesAlternatingRowBackgroundColors = true
+        table.rowHeight = 26
+        table.allowsMultipleSelection = true
+        table.allowsEmptySelection = true
+        table.target = self
+        table.doubleAction = #selector(mirrorAction)
+        table.style = .fullWidth
+        table.dataSource = self
+        table.delegate = self
+
+        let columns: [(String, String, CGFloat)] = [
+            ("name", "设备", 190),
+            ("model", "型号", 130),
+            ("address", "地址", 165),
+            ("status", "状态", 210),
+            ("mirror", "镜像", 70),
+        ]
+        for (id, title, width) in columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            column.title = title
+            column.width = width
+            column.minWidth = 60
+            table.addTableColumn(column)
+        }
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        scroll.documentView = table
+
+        // --- action bar
+        let mirrorButton = makeButton("镜像（黑屏）", #selector(mirrorAction))
+        let mirrorAllButton = makeButton("全部镜像", #selector(mirrorAllAction))
+        let stopButton = makeButton("停止镜像", #selector(stopAction))
+        let wakeButton = makeButton("亮屏", #selector(wakeAction))
+        let terminalButton = makeButton("adb 终端", #selector(terminalAction))
+        let copyButton = makeButton("复制 IP", #selector(copyAction))
+        let renameButton = makeButton("重命名", #selector(renameAction))
+
+        let actionBar = NSStackView(views: [mirrorButton, mirrorAllButton, stopButton, wakeButton,
+                                            terminalButton, copyButton, renameButton])
+        actionBar.orientation = .horizontal
+        actionBar.spacing = 8
+        actionBar.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(actionBar)
+
+        // --- log
+        let logScroll = NSScrollView()
+        logScroll.translatesAutoresizingMaskIntoConstraints = false
+        logScroll.hasVerticalScroller = true
+        logScroll.borderType = .bezelBorder
+        logScroll.drawsBackground = true
+        content.addSubview(logScroll)
+
+        logView.isEditable = false
+        logView.isSelectable = true
+        logView.drawsBackground = true
+        logView.backgroundColor = .textBackgroundColor
+        logView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        logView.textContainerInset = NSSize(width: 6, height: 6)
+        logView.autoresizingMask = [.width]
+        logView.isVerticallyResizable = true
+        logView.textContainer?.widthTracksTextView = true
+        logScroll.documentView = logView
+
+        NSLayoutConstraint.activate([
+            topBar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            topBar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            topBar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+
+            scroll.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+
+            actionBar.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
+            actionBar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            actionBar.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
+
+            logScroll.topAnchor.constraint(equalTo: actionBar.bottomAnchor, constant: 8),
+            logScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            logScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            logScroll.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            logScroll.heightAnchor.constraint(equalToConstant: 150),
+        ])
+    }
+
+    private func makeButton(_ title: String, _ action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        return button
+    }
+
+    // MARK: - Table
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard let column = tableColumn, row < rows.count else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("cell-" + column.identifier.rawValue)
+        var cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTableCellView
+        if cell == nil {
+            let view = NSTableCellView()
+            view.identifier = identifier
+            let label = NSTextField(labelWithString: "")
+            label.lineBreakMode = .byTruncatingTail
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.font = NSFont.systemFont(ofSize: 12)
+            view.addSubview(label)
+            view.textField = label
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+                label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+                label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            ])
+            cell = view
+        }
+
+        let device = rows[row]
+        let label = cell?.textField
+        label?.textColor = .labelColor
+        label?.font = NSFont.systemFont(ofSize: 12)
+
+        switch column.identifier.rawValue {
+        case "name":
+            label?.stringValue = device.name
+            if !device.online { label?.textColor = .tertiaryLabelColor }
+        case "model":
+            label?.stringValue = device.model
+            label?.textColor = device.online ? .secondaryLabelColor : .tertiaryLabelColor
+        case "address":
+            label?.stringValue = device.address
+            label?.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+            label?.textColor = device.online ? .labelColor : .tertiaryLabelColor
+        case "status":
+            if !device.online {
+                label?.stringValue = "离线"
+                label?.textColor = .tertiaryLabelColor
+            } else if let old = device.ipChangedFrom {
+                label?.stringValue = "在线 · IP 曾 \(old.replacingOccurrences(of: ":5555", with: ""))"
+                label?.textColor = .systemOrange
+            } else {
+                label?.stringValue = "在线 · \(device.device)"
+                label?.textColor = .secondaryLabelColor
+            }
+        case "mirror":
+            if device.mirroring {
+                label?.stringValue = "● 镜像中"
+                label?.textColor = .systemGreen
+            } else {
+                label?.stringValue = "—"
+                label?.textColor = .tertiaryLabelColor
+            }
+        default:
+            label?.stringValue = ""
+        }
+        return cell
+    }
+
+    private func refresh() {
+        rows = engine.rows
+        let selected = table.selectedRowIndexes
+        table.reloadData()
+        table.selectRowIndexes(selected, byExtendingSelection: false)
+
+        let online = rows.filter { $0.online }.count
+        let mirrors = rows.filter { $0.mirroring }.count
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let stamp = engine.lastScanAt.map { formatter.string(from: $0) } ?? "—"
+        statusLabel.stringValue = "在线 \(online) / 已知 \(rows.count) · 镜像 \(mirrors) · 上次扫描 \(stamp)"
+    }
+
+    private func setScanning(_ scanning: Bool) {
+        if scanning {
+            spinner.startAnimation(nil)
+        } else {
+            spinner.stopAnimation(nil)
+        }
+    }
+
+    private func appendLog(_ line: String) {
+        let text = logView.string.isEmpty ? line : logView.string + "\n" + line
+        logView.string = text
+        logView.scrollToEndOfDocument(nil)
+    }
+
+    // MARK: - Selection helpers
+
+    private var selectedRows: [DeviceRow] {
+        let indexes = table.selectedRowIndexes
+        return indexes.compactMap { $0 < rows.count ? rows[$0] : nil }
+    }
+
+    // MARK: - Actions
+
+    @objc private func rescanAction() {
+        engine.rescan(deep: false, reason: "手动")
+    }
+
+    @objc private func deepScanAction() {
+        engine.rescan(deep: true, reason: "手动全网段")
+    }
+
+    @objc private func toggleNative() {
+        engine.nativeResolution = nativeCheck.state == .on
+    }
+
+    @objc private func mirrorAction() {
+        let targets = selectedRows
+        if targets.isEmpty {
+            appendLog("先选中一行（或双击某一行）")
+            return
+        }
+        for device in targets where device.online {
+            engine.startMirror(serial: device.serial)
+        }
+    }
+
+    @objc private func mirrorAllAction() {
+        for device in rows where device.online && !device.mirroring {
+            engine.startMirror(serial: device.serial)
+        }
+    }
+
+    @objc private func stopAction() {
+        let targets = selectedRows.filter { $0.mirroring }
+        if targets.isEmpty {
+            engine.stopAllMirrors()
+        } else {
+            for device in targets { engine.stopMirror(serial: device.serial) }
+        }
+    }
+
+    @objc private func wakeAction() {
+        for device in selectedRows where device.online {
+            engine.wake(serial: device.serial)
+        }
+    }
+
+    @objc private func copyAction() {
+        guard let first = selectedRows.first, let address = engine.address(for: first.serial) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(address, forType: .string)
+        appendLog("已复制 \(address)")
+    }
+
+    @objc private func renameAction() {
+        guard let device = selectedRows.first else { return }
+        let alert = NSAlert()
+        alert.messageText = "给设备起个名字"
+        alert.informativeText = "只是显示用，方便在列表里认出来（例如“客厅板子”）。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = device.name
+        field.placeholderString = device.model
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            engine.rename(serial: device.serial, to: field.stringValue.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    @objc private func terminalAction() {
+        guard let device = selectedRows.first, let command = engine.shellCommand(for: device.serial) else { return }
+        let path = NSTemporaryDirectory() + "d3board-shell-\(device.serial).command"
+        let script = "#!/bin/zsh\nclear\necho \"\(device.name) — \(device.address)\"\n\(command)\n"
+        do {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        } catch {
+            appendLog("打开终端失败：\(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - Entry point
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()
