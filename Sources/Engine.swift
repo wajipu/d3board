@@ -661,6 +661,18 @@ final class Engine {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tools.scrcpy)
         process.arguments = args
+        // scrcpy always runs "adb start-server" first, and it finds adb through
+        // PATH. A GUI process has PATH=/usr/bin:/bin:... where no adb lives, so
+        // the mirror dies within a second with "Could not execute adb" —
+        // exactly the "镜像中 → 镜像结束 in the same second" bug. Hand it the
+        // resolved adb's directory explicitly (ADB env var) plus a sane PATH.
+        var env = ProcessInfo.processInfo.environment
+        let extraPath = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin"
+        env["PATH"] = extraPath + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        if !tools.adb.isEmpty {
+            env["ADB"] = tools.adb
+        }
+        process.environment = env
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
