@@ -355,9 +355,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let terminalButton = makeButton("adb 终端", #selector(terminalAction))
         let copyButton = makeButton("复制 IP", #selector(copyAction))
         let renameButton = makeButton("重命名", #selector(renameAction))
+        let addButton = makeButton("添加设备…", #selector(addDeviceAction))
 
         let actionBar = NSStackView(views: [mirrorButton, mirrorAllButton, stopButton, wakeButton,
-                                            terminalButton, copyButton, renameButton])
+                                            terminalButton, copyButton, renameButton, addButton])
         actionBar.orientation = .horizontal
         actionBar.spacing = 8
         actionBar.translatesAutoresizingMaskIntoConstraints = false
@@ -578,6 +579,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
             engine.rename(serial: device.serial, to: field.stringValue.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    @objc private func addDeviceAction() {
+        // Manual escape hatch: a board that changed IP while powered off (or
+        // that lives outside the subnet) is invisible to every scan; here the
+        // user types its address once and it is registered by serial, so all
+        // later address changes are picked up automatically again.
+        let alert = NSAlert()
+        alert.messageText = "添加设备"
+        alert.informativeText = "输入板子的 IP（或 ip:端口），例如 192.168.40.157。\n会先验证它真是 adb 设备，按序列号记入列表。"
+        alert.addButton(withTitle: "连接")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "192.168.40.157"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let raw = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return }
+
+        appendLog("正在连接 \(raw)…")
+        // Probe off the main thread: a wrong address costs a few seconds of
+        // connect timeout, and the alert has already closed.
+        let engine = self.engine
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let note = engine.addDevice(address: raw)
+            DispatchQueue.main.async {
+                self?.appendLog(note)
+            }
         }
     }
 

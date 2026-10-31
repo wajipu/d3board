@@ -323,6 +323,39 @@ final class Engine {
         }
     }
 
+    /// Probe one user-supplied address right now ("添加设备"): connect, verify
+    /// it is an Android adb device, and register it. Returns a human-readable
+    /// result for the log. This is the manual escape hatch for boards that
+    /// changed IP while off (so no scan ever saw the new address), or that sit
+    /// outside the local subnet.
+    @discardableResult
+    func addDevice(address raw: String) -> String {
+        let address = normalize(raw.trimmingCharacters(in: .whitespaces))
+        guard address != normalize("") else { return "地址为空" }
+        guard let adbOpt = tools.adb as String?, !adbOpt.isEmpty else { return "找不到 adb" }
+        let adb = adbOpt
+
+        // Accept a bare IP too; normalize() appended :5555.
+        guard address.split(separator: ".").count == 4 || address.hasPrefix("localhost") else {
+            return "看不懂的地址：\(address)"
+        }
+
+        _ = runProcess(adb, ["connect", address], timeout: 10)
+        let identity = probe(address)
+        guard let found = identity else {
+            _ = runProcess(adb, ["disconnect", address], timeout: 5)
+            return "\(address) 连不上或不是 adb 设备"
+        }
+        let record = registry.record(serial: found.serial, model: found.model,
+                                     device: found.device, address: address)
+        var note = "已添加 \(found.model)（\(found.serial)）\(address)"
+        if let previous = record.previousAddress, previous != address {
+            note += "，之前是 \(previous)"
+        }
+        rescan(deep: false, reason: "添加设备")
+        return note
+    }
+
     private func candidates(deep: Bool, known: [String: KnownDevice]) -> [String] {
         var set = Set<String>()
         for entry in known.values { set.insert(normalize(entry.lastAddress)) }
@@ -493,6 +526,12 @@ final class Engine {
         rejectedLock.lock()
         rejectedUntil[address] = nil
         rejectedLock.unlock()
+    }
+
+    /// Identity probe for a single address (see the private variant for the
+    /// handshake details). Public wrapper for one-off lookups (addDevice).
+    private func probe(_ address: String) -> Discovered? {
+        probe(address, adb: tools.adb)
     }
 
     private func probe(_ address: String, adb: String) -> Discovered? {
