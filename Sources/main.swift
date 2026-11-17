@@ -2,6 +2,8 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private var window: NSWindow!
+    private var deviceList: NSView!
+    private var projectionWall: ProjectionWall?
     private let table = NSTableView()
     private let logView = NSTextView()
     private let spinner = NSProgressIndicator()
@@ -40,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        projectionWall?.stop()
         // scrcpy restores the physical panel when it exits.
         engine.stopAllMirrors()
         Thread.sleep(forTimeInterval: 0.6)
@@ -280,12 +283,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             window.center()
         }
 
-        let content = NSView()
-        window.contentView = content
+        let container = NSView()
+        window.contentView = container
+        let content = NSView(frame: container.bounds)
+        content.autoresizingMask = [.width, .height]
+        deviceList = content
+        container.addSubview(content)
 
         // --- top bar
         let scanButton = makeButton("扫描", #selector(rescanAction))
         let deepButton = makeButton("深度扫描", #selector(deepScanAction))
+        let wallButton = makeButton("投屏墙", #selector(openProjectionWall))
+        wallButton.toolTip = "同时预览选中的设备；不选时预览全部在线设备"
         nativeCheck.target = self
         nativeCheck.action = #selector(toggleNative)
         nativeCheck.state = engine.nativeResolution ? .on : .off
@@ -303,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let topBar = NSStackView(views: [scanButton, deepButton, spinner, statusLabel, nativeCheck])
+        let topBar = NSStackView(views: [scanButton, deepButton, wallButton, spinner, statusLabel, nativeCheck])
         topBar.orientation = .horizontal
         topBar.spacing = 10
         topBar.alignment = .centerY
@@ -478,10 +487,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     private func refresh() {
+        let selected = Set(selectedRows.map(\.serial))
         rows = engine.rows
-        let selected = table.selectedRowIndexes
         table.reloadData()
-        table.selectRowIndexes(selected, byExtendingSelection: false)
+        table.selectRowIndexes(IndexSet(rows.indices.filter { selected.contains(rows[$0].serial) }),
+                               byExtendingSelection: false)
+        projectionWall?.update(rows)
 
         let online = rows.filter { $0.online }.count
         let mirrors = rows.filter { $0.mirroring }.count
@@ -524,6 +535,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc private func toggleNative() {
         engine.nativeResolution = nativeCheck.state == .on
+    }
+
+    @objc private func openProjectionWall() {
+        guard projectionWall == nil, let container = window.contentView else { return }
+        let selected = selectedRows
+        let devices = selected.isEmpty ? rows.filter(\.online) : selected
+        let wall = ProjectionWall(devices: devices, engine: engine, target: self,
+                                  back: #selector(closeProjectionWall))
+        wall.frame = container.bounds
+        wall.autoresizingMask = [.width, .height]
+        projectionWall = wall
+        deviceList.isHidden = true
+        container.addSubview(wall)
+    }
+
+    @objc private func closeProjectionWall() {
+        projectionWall?.stop()
+        projectionWall?.removeFromSuperview()
+        projectionWall = nil
+        deviceList.isHidden = false
     }
 
     @objc private func mirrorAction() {

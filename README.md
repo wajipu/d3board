@@ -25,6 +25,7 @@
 - **停止镜像**：关窗口并把面板恢复（scrcpy 收到 SIGINT 后自己恢复）。
 - **亮屏**：发 `KEYCODE_WAKEUP`，用于屏幕被别的原因关掉时。
 - **全部镜像**：把所有在线设备一次性开窗。
+- **投屏墙**：按住 ⌘ 选中多台设备后点击 **投屏墙**，在主窗口同时看多路画面；不选设备时显示全部在线设备。预览不会控制设备或关闭物理屏。某一路断开可点该卡片的 **重试**；返回设备列表时停止所有预览。需要操作某台设备时，回列表用 **镜像（黑屏）**。
 - **adb 终端**：为选中设备打开 Terminal，直接进 `adb shell`。
 - **重命名**：起个"客厅板子"这样的名字，只影响显示。
 - **原生分辨率**：勾上后镜像用设备原始分辨率（更清晰、更吃带宽；默认限到 1024 宽）。
@@ -156,7 +157,7 @@ osascript -e 'tell application "System Events" to make login item at end with pr
 
 ## 构建
 
-需要 Xcode 命令行工具和 `scrcpy`：
+需要 Xcode 命令行工具和 `scrcpy`。投屏墙需要 `ffmpeg`（通过 Homebrew 安装 scrcpy 时会一起安装）：
 
 ```sh
 brew install scrcpy

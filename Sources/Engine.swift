@@ -52,6 +52,9 @@ final class Tools {
     static let shared = Tools()
     private(set) var adb: String = "/usr/bin/env"
     private(set) var scrcpy: String = ""
+    private(set) lazy var ffmpeg = Tools.locate("ffmpeg", candidates: [
+        "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg",
+    ]) ?? ""
     private var resolved = false
 
     func resolve() {
